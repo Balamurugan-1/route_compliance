@@ -28,8 +28,14 @@ if planned_file and actual_file:
     col2.metric("Extra Distance", f"{metrics['extra_distance_km']:.2f} km")
     col3.metric("Avg. Delay", f"{metrics['avg_delay_min']:.1f} min")
 
+
     st.subheader("🗺️ Planned vs Actual Route")
-    visualize_route_map(planned_route, actual_route)
+    try:
+        st.write("Planned Route Columns:", planned_route.columns.tolist())
+        st.write("Actual Route Columns:", actual_route.columns.tolist())
+        visualize_route_map(planned_route, actual_route)
+    except Exception as e:
+        st.error(f"Error displaying map: {e}")
 
     st.subheader("📋 Stop-wise Deviation Report")
     deviation_df = generate_compliance_table(planned_route, actual_route)

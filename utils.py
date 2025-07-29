@@ -91,22 +91,100 @@ def generate_compliance_table(planned_df, actual_df):
         "Distance (km)", "Fuel %"
     ]]
 
+# In utils.py
+import folium
+from streamlit_folium import st_folium
+import pandas as pd
+import numpy as np
+
 def visualize_route_map(planned_df, actual_df):
-    start_coords = [planned_df.iloc[0]["Latitude"], planned_df.iloc[0]["Longitude"]]
-    m = folium.Map(location=start_coords, zoom_start=13)
+    required_cols = ["Route ID", "Stop ID", "Latitude", "Longitude"]
+    missing_planned_cols = [col for col in required_cols if col not in planned_df.columns]
+    missing_actual_cols = [col for col in required_cols if col not in actual_df.columns]
+    
+    if missing_planned_cols:
+        st.error(f"Error: Missing columns in planned_df: {missing_planned_cols}")
+        return None
+    if missing_actual_cols:
+        st.error(f"Error: Missing columns in actual_df: {missing_actual_cols}")
+        return None
+    if planned_df.empty or actual_df.empty:
+        st.error("Error: One or both input DataFrames are empty.")
+        return None
 
-    folium.PolyLine(
-        locations=list(zip(planned_df["Latitude"], planned_df["Longitude"])),
-        color="green", weight=5, tooltip="Planned Route"
-    ).add_to(m)
+    planned_df = planned_df.dropna(subset=["Latitude", "Longitude"]).copy()
+    actual_df = actual_df.dropna(subset=["Latitude", "Longitude"]).copy()
+    
+    if planned_df.empty and actual_df.empty:
+        st.error("Error: No valid coordinates available to display.")
+        return None
 
-    folium.PolyLine(
-        locations=list(zip(actual_df["Latitude"], actual_df["Longitude"])),
-        color="red", weight=5, tooltip="Actual Route"
-    ).add_to(m)
+    all_coords = pd.concat([
+        planned_df[["Latitude", "Longitude"]],
+        actual_df[["Latitude", "Longitude"]]
+    ])
+    
+    center_lat = all_coords["Latitude"].mean()
+    center_lon = all_coords["Longitude"].mean()
+    if pd.isna(center_lat) or pd.isna(center_lon):
+        st.error("Error: Invalid coordinates for map centering.")
+        return None
+    
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
 
-    st_folium(m, width=800, height=500)
+    if not planned_df.empty:
+        folium.PolyLine(
+            locations=list(zip(planned_df["Latitude"], planned_df["Longitude"])),
+            color="green",
+            weight=5,
+            tooltip="Planned Route"
+        ).add_to(m)
 
+    if not actual_df.empty:
+        folium.PolyLine(
+            locations=list(zip(actual_df["Latitude"], actual_df["Longitude"])),
+            color="red",
+            weight=5,
+            tooltip="Actual Route"
+        ).add_to(m)
+
+    try:
+        deviation_df = generate_compliance_table(planned_df, actual_df)
+        planned_merged = planned_df.merge(deviation_df, on="Stop ID", how="left")
+        for _, row in planned_merged.iterrows():
+            if pd.notnull(row["Latitude"]) and pd.notnull(row["Longitude"]):
+                status = "Skipped" if row.get("Skipped", False) else \
+                         "Out of Order" if row.get("Out of Order", False) else "Normal"
+                delay = f"{int(row['Delay (min)'])} min" if pd.notnull(row.get("Delay (min)")) else "N/A"
+                popup = f"Stop: {row['Stop ID']}<br>Delay: {delay}<br>Status: {status}"
+                folium.Marker(
+                    location=[row["Latitude"], row["Longitude"]],
+                    popup=popup,
+                    icon=folium.Icon(color="green" if status == "Normal" else "orange", icon="circle")
+                ).add_to(m)
+        
+        actual_merged = actual_df.merge(deviation_df, on="Stop ID", how="left")
+        for _, row in actual_merged.iterrows():
+            if pd.notnull(row["Latitude"]) and pd.notnull(row["Longitude"]) and row.get("Extra", False):
+                popup = f"Stop: {row['Stop ID']}<br>Status: Extra"
+                folium.Marker(
+                    location=[row["Latitude"], row["Longitude"]],
+                    popup=popup,
+                    icon=folium.Icon(color="red", icon="circle")
+                ).add_to(m)
+    except Exception as e:
+        st.warning(f"Warning: Could not add markers due to error: {e}. Displaying routes only.")
+
+    if not all_coords.empty:
+        sw = [all_coords["Latitude"].min(), all_coords["Longitude"].min()]
+        ne = [all_coords["Latitude"].max(), all_coords["Longitude"].max()]
+        m.fit_bounds([sw, ne])
+
+    try:
+        st_folium(m, width=800, height=500)
+    except Exception as e:
+        st.error(f"Error rendering map: {e}")
+        return None
 
 
 
