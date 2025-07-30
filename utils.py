@@ -17,33 +17,66 @@ def haversine(coord1, coord2):
 def total_distance(coords):
     return sum(haversine(coords[i], coords[i+1]) for i in range(len(coords) - 1))
 
+# In utils.py
 def get_summary_metrics(planned_df, actual_df):
+    required_cols = ["Route ID", "Stop ID", "Latitude", "Longitude"]
+    time_cols = ["Expected Time", "Actual Time"]
+    
+    missing_planned_cols = [col for col in required_cols + ["Expected Time"] if col not in planned_df.columns]
+    missing_actual_cols = [col for col in required_cols + ["Actual Time"] if col not in actual_df.columns]
+    
+    if missing_planned_cols:
+        st.error(f"Error: Missing columns in planned_df: {missing_planned_cols}")
+        return {"compliance": 0.0, "extra_distance_km": 0.0, "avg_delay_min": 0.0}
+    if missing_actual_cols:
+        st.error(f"Error: Missing columns in actual_df: {missing_actual_cols}")
+        return {"compliance": 0.0, "extra_distance_km": 0.0, "avg_delay_min": 0.0}
+    
+    if planned_df.empty or actual_df.empty:
+        st.error("Error: One or both input DataFrames are empty.")
+        return {"compliance": 0.0, "extra_distance_km": 0.0, "avg_delay_min": 0.0}
+
     planned_coords = list(zip(planned_df["Latitude"], planned_df["Longitude"]))
     actual_coords = list(zip(actual_df["Latitude"], actual_df["Longitude"]))
+    planned_dist = total_distance(planned_coords) if planned_coords else 0.0
+    actual_dist = total_distance(actual_coords) if actual_coords else 0.0
 
-    planned_dist = total_distance(planned_coords)
-    actual_dist = total_distance(actual_coords)
-    delay_series = (
-        (actual_df["Actual Time"] - planned_df["Expected Time"])
-        .dt.total_seconds() // 60
-    ).astype("Int64")
+    merged_df = pd.merge(
+        planned_df[["Stop ID", "Expected Time"]],
+        actual_df[["Stop ID", "Actual Time"]],
+        on="Stop ID",
+        how="inner"
+    )
+
+    if merged_df.empty:
+        st.warning("Warning: No common stops between planned and actual routes. Compliance set to 0.")
+        return {"compliance": 0.0, "extra_distance_km": actual_dist - planned_dist, "avg_delay_min": 0.0}
+
+    try:
+        delay_series = (
+            (merged_df["Actual Time"] - merged_df["Expected Time"])
+            .dt.total_seconds() // 60
+        ).astype("Int64")
+    except Exception as e:
+        st.error(f"Error calculating delays: {e}")
+        return {"compliance": 0.0, "extra_distance_km": actual_dist - planned_dist, "avg_delay_min": 0.0}
 
     delay_series_clean = delay_series.dropna()
     if len(delay_series_clean) > 0:
-        compliance = 100 - (sum(abs(delay_series_clean) > 5) / len(delay_series_clean)) * 100
+        compliance = 100 * (sum(abs(delay_series_clean) <= 5) / len(delay_series_clean))
         avg_delay = delay_series_clean.mean()
     else:
+        st.warning("Warning: No valid delay data after cleaning. Compliance set to 0.")
         compliance = 0.0
         avg_delay = 0.0
 
     return {
         "compliance": round(compliance, 2),
-        "extra_distance_km": actual_dist - planned_dist,
-        "avg_delay_min": avg_delay
+        "extra_distance_km": round(actual_dist - planned_dist, 2),
+        "avg_delay_min": round(avg_delay, 1)
     }
 
 def generate_compliance_table(planned_df, actual_df):
-    # Add Planned Sequence to planned_df
     planned_df = planned_df.sort_values("Expected Time")
     planned_df["Planned Sequence"] = range(1, len(planned_df) + 1)
     
@@ -91,7 +124,6 @@ def generate_compliance_table(planned_df, actual_df):
         "Distance (km)", "Fuel %"
     ]]
 
-# In utils.py
 import folium
 from streamlit_folium import st_folium
 import pandas as pd
@@ -136,7 +168,7 @@ def visualize_route_map(planned_df, actual_df):
         folium.PolyLine(
             locations=list(zip(planned_df["Latitude"], planned_df["Longitude"])),
             color="green",
-            weight=5,
+            weight=2,
             tooltip="Planned Route"
         ).add_to(m)
 
@@ -144,7 +176,7 @@ def visualize_route_map(planned_df, actual_df):
         folium.PolyLine(
             locations=list(zip(actual_df["Latitude"], actual_df["Longitude"])),
             color="red",
-            weight=5,
+            weight=2,
             tooltip="Actual Route"
         ).add_to(m)
 
